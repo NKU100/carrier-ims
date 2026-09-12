@@ -5,3 +5,8 @@ local.properties
 .idea/
 .cxx/
 *.hprof
+
+# Working notes, not a deliverable: they record the order things were built in
+# and go stale the moment the code moves on. The design doc under specs/ is the
+# one that is kept current.
+docs/superpowers/plans/
