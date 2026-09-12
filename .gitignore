@@ -6,6 +6,12 @@ local.properties
 .cxx/
 *.hprof
 
+# Release signing. Losing these means never being able to ship an update that
+# installs over an existing one, so keep a backup somewhere other than here.
+keystore.properties
+*.jks
+*.keystore
+
 # Working notes, not a deliverable: they record the order things were built in
 # and go stale the moment the code moves on. The design doc under specs/ is the
 # one that is kept current.
