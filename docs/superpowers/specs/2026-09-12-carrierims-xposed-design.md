@@ -106,7 +106,11 @@ public PersistableBundle getConfigSubsetForSubIdWithFeature(int, String, String,
 
 部分运营商在第二层拦住 VoLTE：即使 carrier config 已覆写，provisioning 标志 `KEY_VOIMS_OPT_IN_STATUS` 仍为 disabled。carrier config 的读取 hook 覆盖不到这一层。
 
-拦截器每次命中时，取本次调用的 `subId` 参数。若该 subId 尚未处理过，就提交后台任务：先读当前值，已是 `PROVISIONING_VALUE_ENABLED` 就跳过，否则写入。
+拦截器每次命中时，取本次调用的 `subId` 参数。若该 subId 尚未处理完毕，就提交后台任务：先读当前值，已是 `PROVISIONING_VALUE_ENABLED` 就跳过，否则写入，然后**回读校验**。
+
+回读是必须的。实测 `com.android.phone` 启动后约 0.4 秒就会读 carrier config，而那时 IMS 栈还没绑好，写入必然失败——`setProvisioningIntValue` 返回 `CONFIG_RESULT_FAILED`，`getProvisioningIntValue` 返回 -1。所以失败后要重试，由后续的 carrier config 读取驱动（读取本就频繁，不需要自己排期），每个 subId 上限 10 次。上限是为了防止一个永久失败的写入把日志刷爆——调用点是全系统最热的路径之一。实测第 5 次成功，从进程启动算起约 0.65 秒。
+
+成功与否以回读为准，不看返回码：返回码的取值定义在 `@hide` 的 `ImsConfigImplBase` 里（`CONFIG_RESULT_SUCCESS = 0`），而回读直接检验我们真正关心的那件事。
 
 `ProvisioningManager` 的 `createForSubscriptionId`、`setProvisioningIntValue`、`getProvisioningIntValue` 以及 `KEY_VOIMS_OPT_IN_STATUS`、`PROVISIONING_VALUE_ENABLED` 全是 `@SystemApi`，public SDK 里没有，所以只能反射调用。常量值也由反射读取字段获得，而不是把 `68`、`1` 写进源码——数值属于框架内部约定，硬编码等于埋一个静默失效的坑。`com.android.phone` 是平台签名的系统应用，不受 hidden API 限制，且其 uid 本身持有 `MODIFY_PHONE_STATE`，因此反射之外不需要任何绕过手段。
 
@@ -116,7 +120,8 @@ public PersistableBundle getConfigSubsetForSubIdWithFeature(int, String, String,
 
 `getConfigForSubId` 是全系统都在调的路径。拦截器抛出的异常会传播给每一个调用方，足以打挂 telephony。因此：
 
-- 拦截器内 `putAll` 全程 try/catch。失败就返回未经修改的原始结果，只记日志。
+- 拦截器登记为 `ExceptionMode.PROTECTIVE`。该模式下框架会捕获并记录拦截器抛出的异常；异常发生在 `proceed()` 之后时，框架返回 `proceed()` 已经取得的结果。它其实也是默认值，但显式写出来，免得依赖 `module.prop` 的全局配置。
+- 在此之上，拦截器内 `putAll` 仍然全程 try/catch。框架的保护网与我们自己的保护网互不依赖，而这条路径不值得把安全性押在框架版本上。
 - hook 目标解析失败写 `Log.ERROR`，不安装拦截器，不抛异常。
 - provisioning 写入失败只记日志，不影响 carrier config 覆写。
 
@@ -171,6 +176,10 @@ release 走 minify 时需要 libxposed 要求的这三条规则，用于保留�
 6. 重启手机后重复第 3 步，确认无需任何应用参与即自动生效
 
 第 3 步是核心验收标准：它直接测量真实读取方看到的值。
+
+第 3 步必须先取基线。模块尚未启用时，本机实测 19 个 key 里有 13 个与期望不符——**没有基线，"全部 PASS" 不能归因于模块**，因为其中 6 个 key 的期望值恰好与机器默认值相同。
+
+不要用 logcat 判断模块有没有加载。logd 的 main 缓冲区默认只有 256 KiB，开机时的日志量能在一分钟内把 `hooked …` 那行冲掉，于是"日志为空"看起来就像"模块没加载"。判断依据只能是第 3 步的探针。
 
 ## 已知风险
 
