@@ -31,7 +31,7 @@ overrideConfig: subId=1, persistent=false, overrides=PersistableBundle[{...}]
 - 不做 UI、配置文件、Activity。覆写项写死在代码里，改值需重新编译。
 - 不 hook `isSystemApp()`，不调 `overrideConfig()`。完全不使用 override 机制。
 - 不做多语言、不做更新检查。
-- 不兼容 LSPosed 以外的 Xposed 框架。模块使用 libxposed API 102，只有 LSPosed 实现它。
+- 不兼容 LSPosed 以外的 Xposed 框架。模块使用 libxposed API 102，只有 LSPosed 实现它，且需要 LSPosed v2.2.0 或更新的版本——其 framework 才实现了 `XposedInterface.API_102` 与 `ExceptionMode`。
 
 ## 关键事实（已在 Pixel 6 Pro / Android 17 实测）
 
@@ -97,6 +97,8 @@ public PersistableBundle getConfigSubsetForSubIdWithFeature(int, String, String,
 - VoLTE / VT / UT：`KEY_CARRIER_VOLTE_AVAILABLE_BOOL`、`KEY_CARRIER_VT_AVAILABLE_BOOL`、`KEY_CARRIER_SUPPORTS_SS_OVER_UT_BOOL`
 - 跨 SIM 通话：`KEY_CARRIER_CROSS_SIM_IMS_AVAILABLE_BOOL`、`KEY_ENABLE_CROSS_SIM_CALLING_ON_OPPORTUNISTIC_DATA_BOOL`
 - VoWiFi：`KEY_CARRIER_WFC_IMS_AVAILABLE_BOOL`、`KEY_CARRIER_WFC_SUPPORTS_WIFI_ONLY_BOOL`、`KEY_EDITABLE_WFC_MODE_BOOL`、`KEY_EDITABLE_WFC_ROAMING_MODE_BOOL`、`KEY_SHOW_WIFI_CALLING_ICON_IN_STATUS_BAR_BOOL`、`KEY_WFC_SPN_FORMAT_IDX_INT=6`
+
+后两个 key 在 `CarrierConfigManager` 里标了 `@hide`，public SDK 的 `android.jar` 中没有对应常量。carrier config 的 key 本质就是字符串，因此直接内联字面量 `"show_wifi_calling_icon_in_status_bar_bool"` 与 `"wfc_spn_format_idx_int"`，其余 18 个 key 一律引用 `CarrierConfigManager` 常量，让编译器充当拼写检查。
 - 增强 4G LTE 开关可见可编辑：`KEY_EDITABLE_ENHANCED_4G_LTE_BOOL=true`、`KEY_HIDE_ENHANCED_4G_LTE_BOOL=false`、`KEY_HIDE_LTE_PLUS_DATA_ICON_BOOL=false`
 - VoNR 与 5G：`KEY_VONR_ENABLED_BOOL`、`KEY_VONR_SETTING_VISIBILITY_BOOL`、`KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY={NSA, SA}`、`KEY_5G_NR_SSRSRP_THRESHOLDS_INT_ARRAY={-128, -118, -108, -98}`
 
@@ -104,7 +106,9 @@ public PersistableBundle getConfigSubsetForSubIdWithFeature(int, String, String,
 
 部分运营商在第二层拦住 VoLTE：即使 carrier config 已覆写，provisioning 标志 `KEY_VOIMS_OPT_IN_STATUS` 仍为 disabled。carrier config 的读取 hook 覆盖不到这一层。
 
-拦截器每次命中时，取本次调用的 `subId` 参数。若该 subId 尚未处理过，就提交后台任务：先读当前值，已是 `PROVISIONING_VALUE_ENABLED` 就跳过，否则写入。`com.android.phone` 的 uid 本身持有 `MODIFY_PHONE_STATE`，所以直接用公开的 `ProvisioningManager`，无需任何绕过手段。
+拦截器每次命中时，取本次调用的 `subId` 参数。若该 subId 尚未处理过，就提交后台任务：先读当前值，已是 `PROVISIONING_VALUE_ENABLED` 就跳过，否则写入。
+
+`ProvisioningManager` 的 `createForSubscriptionId`、`setProvisioningIntValue`、`getProvisioningIntValue` 以及 `KEY_VOIMS_OPT_IN_STATUS`、`PROVISIONING_VALUE_ENABLED` 全是 `@SystemApi`，public SDK 里没有，所以只能反射调用。常量值也由反射读取字段获得，而不是把 `68`、`1` 写进源码——数值属于框架内部约定，硬编码等于埋一个静默失效的坑。`com.android.phone` 是平台签名的系统应用，不受 hidden API 限制，且其 uid 本身持有 `MODIFY_PHONE_STATE`，因此反射之外不需要任何绕过手段。
 
 用一个并发 `Set<Integer>` 记录已处理的 subId。按 subId 而不是按全局标志去重，换卡后新的 subId 仍会被处理。写入放后台线程执行，避免阻塞 binder 调用。
 
